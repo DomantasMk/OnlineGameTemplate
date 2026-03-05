@@ -1,15 +1,23 @@
 import * as THREE from 'three';
 import type { StaticBody } from 'shared';
 import { GROUND_SIZE } from 'shared';
+import { CharacterFactory } from './character/CharacterFactory.js';
+import type { CharacterAnimator, CharacterDefinition, MovementState } from './character/index.js';
+
+interface PlayerEntry {
+  root: THREE.Group;
+  animator: CharacterAnimator | null;
+}
 
 export class Renderer {
   readonly scene: THREE.Scene;
   readonly camera: THREE.PerspectiveCamera;
   private renderer: THREE.WebGLRenderer;
 
-  private playerMeshes = new Map<string, THREE.Mesh>();
+  private playerEntries = new Map<string, PlayerEntry>();
+  private characterFactory: CharacterFactory;
 
-  constructor() {
+  constructor(characterDefinition: CharacterDefinition) {
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x1a1a2e);
     this.scene.fog = new THREE.Fog(0x1a1a2e, 30, 80);
@@ -29,6 +37,7 @@ export class Renderer {
 
     this.setupLights();
     this.setupGround();
+    this.characterFactory = new CharacterFactory(characterDefinition);
 
     window.addEventListener('resize', () => {
       this.camera.aspect = window.innerWidth / window.innerHeight;
@@ -65,6 +74,54 @@ export class Renderer {
     this.scene.add(grid);
   }
 
+  private createPlayerFromTemplate(): PlayerEntry | null {
+    const animator = this.characterFactory.createCharacter();
+    if (!animator) return null;
+    return { root: animator.root, animator };
+  }
+
+  private createPlaceholderPlayer(color: number): PlayerEntry {
+    const geometry = new THREE.BoxGeometry(1, 1, 1);
+    const material = new THREE.MeshStandardMaterial({
+      color,
+      roughness: 0.4,
+      metalness: 0.2,
+    });
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.castShadow = true;
+    const root = new THREE.Group();
+    root.add(mesh);
+    return { root, animator: null };
+  }
+
+  private disposePlaceholder(root: THREE.Group) {
+    root.traverse((obj) => {
+      if ((obj as THREE.Mesh).isMesh) {
+        const mesh = obj as THREE.Mesh;
+        mesh.geometry?.dispose();
+        const m = mesh.material;
+        if (Array.isArray(m)) m.forEach((mat) => mat.dispose());
+        else m?.dispose();
+      }
+    });
+  }
+
+  private tryUpgradePlaceholder(id: string, entry: PlayerEntry): PlayerEntry {
+    if (entry.animator) return entry;
+
+    const upgraded = this.createPlayerFromTemplate();
+    if (!upgraded) return entry;
+
+    upgraded.root.position.copy(entry.root.position);
+    upgraded.root.quaternion.copy(entry.root.quaternion);
+
+    this.scene.remove(entry.root);
+    this.disposePlaceholder(entry.root);
+    this.scene.add(upgraded.root);
+    this.playerEntries.set(id, upgraded);
+    return upgraded;
+  }
+
   addStaticBodies(bodies: StaticBody[]) {
     for (const b of bodies) {
       const geometry = new THREE.BoxGeometry(b.size.x, b.size.y, b.size.z);
@@ -81,30 +138,39 @@ export class Renderer {
     }
   }
 
-  getOrCreatePlayerMesh(id: string, color: number): THREE.Mesh {
-    let mesh = this.playerMeshes.get(id);
-    if (!mesh) {
-      const geometry = new THREE.BoxGeometry(1, 1, 1);
-      const material = new THREE.MeshStandardMaterial({
-        color,
-        roughness: 0.4,
-        metalness: 0.2,
-      });
-      mesh = new THREE.Mesh(geometry, material);
-      mesh.castShadow = true;
-      this.scene.add(mesh);
-      this.playerMeshes.set(id, mesh);
+  getOrCreatePlayerMesh(id: string, color: number): THREE.Group {
+    let entry = this.playerEntries.get(id);
+    if (!entry) {
+      entry = this.createPlayerFromTemplate() ?? this.createPlaceholderPlayer(color);
+      this.scene.add(entry.root);
+      this.playerEntries.set(id, entry);
+    } else {
+      entry = this.tryUpgradePlaceholder(id, entry);
     }
-    return mesh;
+    return entry.root;
+  }
+
+  setPlayerMovementState(id: string, state: MovementState) {
+    const entry = this.playerEntries.get(id);
+    if (!entry?.animator) return;
+    entry.animator.setState(state);
   }
 
   removePlayerMesh(id: string) {
-    const mesh = this.playerMeshes.get(id);
-    if (mesh) {
-      this.scene.remove(mesh);
-      mesh.geometry.dispose();
-      (mesh.material as THREE.MeshStandardMaterial).dispose();
-      this.playerMeshes.delete(id);
+    const entry = this.playerEntries.get(id);
+    if (entry) {
+      this.scene.remove(entry.root);
+      // Only dispose geometry/materials for placeholders; animated character meshes share template assets.
+      if (!entry.animator) {
+        this.disposePlaceholder(entry.root);
+      }
+      this.playerEntries.delete(id);
+    }
+  }
+
+  update(deltaSeconds: number) {
+    for (const entry of this.playerEntries.values()) {
+      entry.animator?.update(deltaSeconds);
     }
   }
 

@@ -119,11 +119,20 @@ export class PredictionEngine {
     }
 
     if (input.jump) {
-      const pos = body.translation();
-      if (pos.y < PLAYER_SIZE / 2 + 0.2) {
+      if (this.isGrounded(body)) {
         const vel = body.linvel();
-        body.setLinvel({ x: vel.x, y: 6.0, z: vel.z }, true);
+        body.setLinvel({ x: vel.x, y: 9.0, z: vel.z }, true);
       }
     }
+  }
+
+  private isGrounded(body: RAPIER.RigidBody): boolean {
+    const pos = body.translation();
+    const ray = new RAPIER.Ray(
+      { x: pos.x, y: pos.y - PLAYER_SIZE / 2, z: pos.z },
+      { x: 0, y: -1, z: 0 }
+    );
+    const hit = this.world.castRay(ray, 0.35, true, undefined, undefined, undefined, body, undefined);
+    return hit !== null;
   }
 }
